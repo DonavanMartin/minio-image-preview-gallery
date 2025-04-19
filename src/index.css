@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.gallery img {
+  transition: transform 0.2s;
+}
+.gallery img:hover {
+  transform: scale(1.05);
+}
+
+/* Modal styles */
+.modal-overlay {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.modal-content {
+  animation: slideIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* react-datepicker styles */
+.react-datepicker-wrapper {
+  display: inline-block;
+}
+
+.react-datepicker {
+  font-family: 'Arial', sans-serif;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.react-datepicker__day--selected,
+.react-datepicker__day--keyboard-selected {
+  background-color: #2563eb;
+  color: white;
+  border-radius: 50%;
+}
+
+.react-datepicker__day--highlighted {
+  background-color: #bfdbfe; /* Light blue for dates with images */
+  color: #1e40af; /* Dark blue text */
+  border-radius: 50%;
+  font-weight: bold;
+}
+
+.react-datepicker__day--highlighted:hover {
+  background-color: #93c5fd; /* Slightly darker on hover */
+}
+
+/* Tooltip styles */
+.group:hover .group-hover\:block {
+  display: block;
+}
