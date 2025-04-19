@@ -3,7 +3,7 @@ import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import ImageModal from './ImageModal';
 import { VERSION_NUMBER_MAJOR, VERSION_NUMBER_MINOR, VERSION_NUMBER_PATCH, GITHUB_URL } from './constants';
-import { FaGithub } from 'react-icons/fa'; // Use FaGithub from react-icons
+import { FaGithub } from 'react-icons/fa';
 
 interface Image {
   key: string;
@@ -22,6 +22,8 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<number>(1);
   const [hasMore, setHasMore] = useState<boolean>(true);
+  const [isFooterVisible, setIsFooterVisible] = useState<boolean>(true); // Track footer visibility
+  const [lastScrollTop, setLastScrollTop] = useState<number>(0); // Track last scroll position
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
@@ -216,8 +218,31 @@ const App: React.FC = () => {
     };
   }, [hasMore, loading, loadMoreImages]);
 
+  // Handle scroll to toggle footer visibility
+  useEffect(() => {
+    const handleScroll = () => {
+      const scrollTop = window.scrollY || document.documentElement.scrollTop;
+
+      // Show footer if at the top
+      if (scrollTop === 0) {
+        setIsFooterVisible(true);
+        setLastScrollTop(scrollTop);
+        return;
+      }
+
+      // Determine scroll direction
+      const isScrollingDown = scrollTop > lastScrollTop;
+      setIsFooterVisible(!isScrollingDown);
+      setLastScrollTop(scrollTop);
+    };
+
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [lastScrollTop]);
+
   // Handle image click to open modal
   const handleImageClick = (image: Image) => {
+    console.log('Image clicked:', image); // Debug log
     setSelectedImage(image);
   };
 
@@ -419,7 +444,11 @@ const App: React.FC = () => {
         {loading && <div className="text-center text-gray-600 mt-4">Loading images...</div>}
         <div ref={sentinelRef} className="h-10" /> {/* Sentinel for Intersection Observer */}
       </main>
-      <footer className="bg-gray-800 text-white text-center p-4">
+      <footer
+        className={`fixed bottom-0 left-0 right-0 bg-gray-800 text-white text-center p-4 z-10 transition-opacity duration-300 ${
+          isFooterVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        }`}
+      >
         <div className="flex flex-col items-center gap-1">
           <p className="text-sm font-bold">
             v{VERSION_NUMBER_MAJOR}.{VERSION_NUMBER_MINOR}.{VERSION_NUMBER_PATCH}
@@ -437,6 +466,23 @@ const App: React.FC = () => {
           <p className="text-sm mt-2">© 2025 Image Preview App</p>
         </div>
       </footer>
+      {selectedImage && (
+        <ImageModal
+          imageUrl={`${bucketUrl}${encodeURIComponent(selectedImage.key)}`}
+          alt={selectedImage.key}
+          metadata={{
+            filename: selectedImage.key,
+            lastModified: selectedImage.lastModified,
+            size: selectedImage.size,
+            contentType: selectedImage.contentType,
+          }}
+          onClose={handleCloseModal}
+          onPreviousImage={handlePreviousImage}
+          onNextImage={handleNextImage}
+          hasPreviousImage={hasPreviousImage}
+          hasNextImage={hasNextImage}
+        />
+      )}
     </div>
   );
 };
