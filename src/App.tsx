@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import ImageModal from './ImageModal';
+import { VERSION_NUMBER_MAJOR, VERSION_NUMBER_MINOR, VERSION_NUMBER_PATCH, GITHUB_URL } from './constants';
+import { FaGithub } from 'react-icons/fa'; // Use FaGithub from react-icons
 
 interface Image {
   key: string;
@@ -417,25 +419,23 @@ const App: React.FC = () => {
         {loading && <div className="text-center text-gray-600 mt-4">Loading images...</div>}
         <div ref={sentinelRef} className="h-10" /> {/* Sentinel for Intersection Observer */}
       </main>
-      {selectedImage && (
-        <ImageModal
-          imageUrl={`${bucketUrl}${encodeURIComponent(selectedImage.key)}`}
-          alt={selectedImage.key}
-          metadata={{
-            filename: selectedImage.key,
-            lastModified: selectedImage.lastModified,
-            size: selectedImage.size,
-            contentType: selectedImage.contentType,
-          }}
-          onClose={handleCloseModal}
-          onPreviousImage={handlePreviousImage}
-          onNextImage={handleNextImage}
-          hasPreviousImage={hasPreviousImage}
-          hasNextImage={hasNextImage}
-        />
-      )}
       <footer className="bg-gray-800 text-white text-center p-4">
-        <p>© 2025 Image Preview App</p>
+        <div className="flex flex-col items-center gap-1">
+          <p className="text-sm font-bold">
+            v{VERSION_NUMBER_MAJOR}.{VERSION_NUMBER_MINOR}.{VERSION_NUMBER_PATCH}
+          </p>
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center text-blue-400 hover:text-blue-300 no-underline text-sm"
+            aria-label="Visit GitHub repository"
+          >
+            <FaGithub className="w-4 h-4 mr-1" />
+            GitHub
+          </a>
+          <p className="text-sm mt-2">© 2025 Image Preview App</p>
+        </div>
       </footer>
     </div>
   );
