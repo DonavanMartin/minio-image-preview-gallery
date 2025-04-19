@@ -4,6 +4,7 @@ import 'react-datepicker/dist/react-datepicker.css';
 import ImageModal from './ImageModal';
 import { VERSION_NUMBER_MAJOR, VERSION_NUMBER_MINOR, VERSION_NUMBER_PATCH, GITHUB_URL } from './constants';
 import { FaGithub } from 'react-icons/fa';
+import pLimit from 'p-limit';
 
 interface Image {
   key: string;
@@ -12,11 +13,17 @@ interface Image {
   contentType: string; // e.g., image/jpeg
 }
 
+interface ObjectInfo {
+  key: string;
+  lastModified: string; // ISO 8601 date string
+}
+
 const App: React.FC = () => {
-  const [images, setImages] = useState<Image[]>([]);
+  const [objects, setObjects] = useState<ObjectInfo[]>([]); // Raw objects from bucket
+  const [images, setImages] = useState<Image[]>([]); // Images with metadata
   const [displayedImages, setDisplayedImages] = useState<Image[]>([]);
   const [selectedImage, setSelectedImage] = useState<Image | null>(null);
-  const [selectedDate, setSelectedDate] = useState<Date | null>(new Date()); // Default to today
+  const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
   const [uniqueDates, setUniqueDates] = useState<Date[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -25,11 +32,13 @@ const App: React.FC = () => {
   const [isFooterVisible, setIsFooterVisible] = useState<boolean>(true);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const metadataCache = useRef<Map<string, Image>>(new Map()); // Cache for metadata
 
   // S3-compatible API endpoint for bucket listing
   const bucketUrl: string = 'https://storage.algosol.ca/social-cleaner-posts-img/';
   const batchSize: number = 20; // Number of images per page
   const minFileSize: number = 10240; // 10KB in bytes
+  const concurrentRequests: number = 5; // Max concurrent HEAD requests
 
   // Normalize date to start of day in local timezone
   const normalizeDate = (date: Date): Date => {
@@ -56,19 +65,18 @@ const App: React.FC = () => {
     return images.filter((image) => areDatesEqual(new Date(image.lastModified), selected)).length;
   };
 
-  const fetchImages = useCallback(async () => {
+  // Fetch object list (keys and lastModified) with pagination
+  const fetchObjects = useCallback(async () => {
     try {
       setLoading(true);
-      const imageList: Image[] = [];
+      const objectList: ObjectInfo[] = [];
       let continuationToken: string | null = null;
 
-      // Fetch objects with pagination
       do {
-        // Construct URL with continuation token if present
         const url = continuationToken
           ? `${bucketUrl}?list-type=2&continuation-token=${encodeURIComponent(continuationToken)}`
           : `${bucketUrl}?list-type=2`;
-        
+
         const response: Response = await fetch(url, {
           method: 'GET',
           headers: { 'Accept': 'application/xml' },
@@ -81,8 +89,6 @@ const App: React.FC = () => {
         }
 
         const text: string = await response.text();
-
-        // Check if response is HTML
         if (text.trim().startsWith('<!DOCTYPE html>') || text.includes('<html')) {
           throw new Error(
             'Received HTML instead of XML. The bucket URL may be incorrect or serving the MinIO browser UI. Contact the bucket owner to confirm the S3 API endpoint (e.g., https://storage.algosol.ca/s3/social-cleaner-posts-img/).'
@@ -91,59 +97,33 @@ const App: React.FC = () => {
 
         const parser: DOMParser = new DOMParser();
         const xml: Document = parser.parseFromString(text, 'application/xml');
-
         if (xml.querySelector('parsererror')) {
           throw new Error('Failed to parse XML response. Ensure the bucket returns a valid object listing.');
         }
 
-        const imagePromises: Promise<Image | null>[] = Array.from(xml.querySelectorAll('Contents'))
-          .map(async (node: Element) => {
-            const key = node.querySelector('Key')?.textContent || '';
-            if (!/\.(jpg|jpeg|png|gif|webp)$/i.test(key)) return null;
+        const objects = Array.from(xml.querySelectorAll('Contents')).map((node: Element) => ({
+          key: node.querySelector('Key')?.textContent || '',
+          lastModified: node.querySelector('LastModified')?.textContent || '',
+        }));
 
-            // Fetch metadata via HEAD request
-            const headResponse = await fetch(`${bucketUrl}${encodeURIComponent(key)}`, {
-              method: 'HEAD',
-              mode: 'cors',
-              credentials: 'omit',
-            });
-            if (!headResponse.ok) {
-              console.warn(`Failed to fetch metadata for ${key}`);
-              return null;
-            }
-
-            const size = parseInt(headResponse.headers.get('Content-Length') || '0', 10);
-            if (size < minFileSize) return null; // Ignore images < 10KB
-
-            return {
-              key,
-              lastModified: node.querySelector('LastModified')?.textContent || '',
-              size,
-              contentType: headResponse.headers.get('Content-Type') || 'unknown',
-            };
-          });
-
-        const newImages = (await Promise.all(imagePromises))
-          .filter((image): image is Image => image !== null);
-        
-        imageList.push(...newImages);
-
-        // Get the next continuation token
+        objectList.push(...objects);
         continuationToken = xml.querySelector('NextContinuationToken')?.textContent || null;
       } while (continuationToken);
 
-      if (imageList.length === 0) {
-        throw new Error('No images found in the bucket with size >= 10KB.');
+      if (objectList.length === 0) {
+        throw new Error('No objects found in the bucket.');
       }
 
-      // Sort images by lastModified (newest first)
-      imageList.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
+      // Filter for image extensions and sort by lastModified (newest first)
+      const filteredObjects = objectList
+        .filter((obj) => /\.(jpg|jpeg|png|gif|webp)$/i.test(obj.key))
+        .sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
 
-      // Compute unique dates (sorted descending) for calendar highlights
+      // Compute unique dates (sorted descending)
       const dates = Array.from(
         new Set(
-          imageList.map((image) => {
-            const date = normalizeDate(new Date(image.lastModified));
+          filteredObjects.map((obj) => {
+            const date = normalizeDate(new Date(obj.lastModified));
             return date.toISOString();
           })
         )
@@ -151,55 +131,106 @@ const App: React.FC = () => {
         .map((dateStr) => new Date(dateStr))
         .sort((a, b) => b.getTime() - a.getTime());
 
-      setImages(imageList);
+      setObjects(filteredObjects);
       setUniqueDates(dates);
-
-      // Filter for today's date by default
-      const today = normalizeDate(new Date());
-      const todayImages = imageList.filter((image) =>
-        areDatesEqual(new Date(image.lastModified), today)
-      );
-      setDisplayedImages(todayImages.slice(0, batchSize));
-      setHasMore(todayImages.length > batchSize);
       setLoading(false);
     } catch (err: unknown) {
       const errorMessage =
         err instanceof Error
           ? err.message.includes('cors') || err.message.includes('fetch')
-            ? `${err.message}. Ensure the server is correctly configured to allow CORS for ${window.location.origin}.`
+            ? `${err.message}. Ensure the server is configured to allow CORS for ${window.location.origin}.`
             : err.message
           : 'Unknown error';
       setError(errorMessage);
       setLoading(false);
     }
-  }, [bucketUrl, batchSize]);
+  }, [bucketUrl]);
 
-  // Initial fetch
+  // Fetch metadata for a batch of objects
+  const fetchMetadata = useCallback(
+    async (objectsToFetch: ObjectInfo[]): Promise<Image[]> => {
+      const limit = pLimit(concurrentRequests);
+      const imagePromises: Promise<Image | null>[] = objectsToFetch.map((obj) =>
+        limit(async () => {
+          // Check cache first
+          const cached = metadataCache.current.get(obj.key);
+          if (cached) return cached;
+
+          try {
+            const headResponse = await fetch(`${bucketUrl}${encodeURIComponent(obj.key)}`, {
+              method: 'HEAD',
+              mode: 'cors',
+              credentials: 'omit',
+            });
+            if (!headResponse.ok) {
+              console.warn(`Failed to fetch metadata for ${obj.key}`);
+              return null;
+            }
+
+            const size = parseInt(headResponse.headers.get('Content-Length') || '0', 10);
+            if (size < minFileSize) return null;
+
+            const image: Image = {
+              key: obj.key,
+              lastModified: obj.lastModified,
+              size,
+              contentType: headResponse.headers.get('Content-Type') || 'unknown',
+            };
+
+            // Cache the metadata
+            metadataCache.current.set(obj.key, image);
+            return image;
+          } catch (err) {
+            console.warn(`Error fetching metadata for ${obj.key}:`, err);
+            return null;
+          }
+        })
+      );
+
+      return (await Promise.all(imagePromises)).filter((image): image is Image => image !== null);
+    },
+    [bucketUrl, minFileSize]
+  );
+
+  // Initial fetch of objects
   useEffect(() => {
-    fetchImages();
-  }, [fetchImages]);
+    fetchObjects();
+  }, [fetchObjects]);
 
-  // Filter images by selected date and clear displayed images
+  // Filter images by selected date and fetch initial metadata
   useEffect(() => {
     setDisplayedImages([]);
+    setImages([]);
     setPage(1);
-    if (!selectedDate) {
-      setDisplayedImages(images.slice(0, batchSize));
-      setHasMore(images.length > batchSize);
-      return;
+    metadataCache.current.clear(); // Clear cache on date change
+
+    const fetchInitialImages = async () => {
+      try {
+        setLoading(true);
+        const objectsToDisplay = selectedDate
+          ? objects.filter((obj) => areDatesEqual(new Date(obj.lastModified), normalizeDate(selectedDate)))
+          : objects;
+
+        const initialObjects = objectsToDisplay.slice(0, batchSize);
+        const newImages = await fetchMetadata(initialObjects);
+
+        setImages(newImages);
+        setDisplayedImages(newImages);
+        setHasMore(objectsToDisplay.length > batchSize);
+      } catch (err) {
+        setError('Failed to fetch initial image metadata.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (objects.length > 0) {
+      fetchInitialImages();
     }
-
-    const selected = normalizeDate(selectedDate);
-    const filteredImages = images.filter((image) =>
-      areDatesEqual(new Date(image.lastModified), selected)
-    );
-
-    setDisplayedImages(filteredImages.slice(0, batchSize));
-    setHasMore(filteredImages.length > batchSize);
-  }, [selectedDate, images, batchSize]);
+  }, [selectedDate, objects, batchSize, fetchMetadata]);
 
   // Load more images when scrolling
-  const loadMoreImages = useCallback(() => {
+  const loadMoreImages = useCallback(async () => {
     if (!hasMore || loading) return;
 
     setLoading(true);
@@ -207,19 +238,19 @@ const App: React.FC = () => {
     const startIndex = page * batchSize;
     const endIndex = nextPage * batchSize;
 
-    const imagesToDisplay = selectedDate
-      ? images.filter((image) =>
-          areDatesEqual(new Date(image.lastModified), normalizeDate(selectedDate))
-        )
-      : images;
+    const objectsToDisplay = selectedDate
+      ? objects.filter((obj) => areDatesEqual(new Date(obj.lastModified), normalizeDate(selectedDate)))
+      : objects;
 
-    const newImages = imagesToDisplay.slice(startIndex, endIndex);
+    const nextObjects = objectsToDisplay.slice(startIndex, endIndex);
+    const newImages = await fetchMetadata(nextObjects);
 
+    setImages((prev) => [...prev, ...newImages]);
     setDisplayedImages((prev) => [...prev, ...newImages]);
     setPage(nextPage);
-    setHasMore(endIndex < imagesToDisplay.length);
+    setHasMore(endIndex < objectsToDisplay.length);
     setLoading(false);
-  }, [hasMore, loading, images, page, batchSize, selectedDate]);
+  }, [hasMore, loading, objects, page, batchSize, selectedDate, fetchMetadata]);
 
   // Intersection Observer for infinite scrolling
   useEffect(() => {
@@ -387,7 +418,7 @@ const App: React.FC = () => {
                 className="w-4 h-4 mr-2"
                 fill="none"
                 stroke="currentColor"
-                viewBox="0 0 24 24"
+                viewBox="0 24 24"
                 xmlns="http://www.w3.org/2000/svg"
               >
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
@@ -409,7 +440,7 @@ const App: React.FC = () => {
                 className="w-4 h-4 ml-2"
                 fill="none"
                 stroke="currentColor"
-                viewBox="0 0 24 24"
+                viewBox="0 24 24"
                 xmlns="http://www.w3.org/2000/svg"
               >
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
@@ -456,6 +487,15 @@ const App: React.FC = () => {
               />
             </div>
           ))}
+          {loading && (
+            <>
+              {Array.from({ length: batchSize }).map((_, index) => (
+                <div key={`placeholder-${index}`} className="bg-white p-2 rounded shadow">
+                  <div className="w-full h-48 bg-gray-200 animate-pulse rounded"></div>
+                </div>
+              ))}
+            </>
+          )}
         </div>
         {loading && <div className="text-center text-gray-600 mt-4">Loading images...</div>}
         <div ref={sentinelRef} className="h-10" />
