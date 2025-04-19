@@ -22,7 +22,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<number>(1);
   const [hasMore, setHasMore] = useState<boolean>(true);
-  const [isFooterVisible, setIsFooterVisible] = useState<boolean>(true); // Track footer visibility
+  const [isFooterVisible, setIsFooterVisible] = useState<boolean>(true);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
@@ -59,83 +59,104 @@ const App: React.FC = () => {
   const fetchImages = useCallback(async () => {
     try {
       setLoading(true);
-      const response: Response = await fetch(bucketUrl, {
-        method: 'GET',
-        headers: { 'Accept': 'application/xml' },
-        mode: 'cors',
-        credentials: 'omit',
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
-      }
-      const text: string = await response.text();
+      const imageList: Image[] = [];
+      let continuationToken: string | null = null;
 
-      // Check if response is HTML
-      if (text.trim().startsWith('<!DOCTYPE html>') || text.includes('<html')) {
-        throw new Error(
-          'Received HTML instead of XML. The bucket URL may be incorrect or serving the MinIO browser UI. Contact the bucket owner to confirm the S3 API endpoint (e.g., https://storage.algosol.ca/s3/social-cleaner-posts-img/).'
-        );
-      }
-
-      const parser: DOMParser = new DOMParser();
-      const xml: Document = parser.parseFromString(text, 'application/xml');
-
-      if (xml.querySelector('parsererror')) {
-        throw new Error('Failed to parse XML response. Ensure the bucket returns a valid object listing.');
-      }
-
-      const imagePromises: Promise<Image | null>[] = Array.from(xml.querySelectorAll('Contents'))
-        .map(async (node: Element) => {
-          const key = node.querySelector('Key')?.textContent || '';
-          if (!/\.(jpg|jpeg|png|gif|webp)$/i.test(key)) return null;
-
-          // Fetch metadata via HEAD request
-          const headResponse = await fetch(`${bucketUrl}${encodeURIComponent(key)}`, {
-            method: 'HEAD',
-            mode: 'cors',
-            credentials: 'omit',
-          });
-          if (!headResponse.ok) {
-            console.warn(`Failed to fetch metadata for ${key}`);
-            return null;
-          }
-
-          const size = parseInt(headResponse.headers.get('Content-Length') || '0', 10);
-          if (size < minFileSize) return null; // Ignore images < 10KB
-
-          return {
-            key,
-            lastModified: node.querySelector('LastModified')?.textContent || '',
-            size,
-            contentType: headResponse.headers.get('Content-Type') || 'unknown',
-          };
+      // Fetch objects with pagination
+      do {
+        // Construct URL with continuation token if present
+        const url = continuationToken
+          ? `${bucketUrl}?list-type=2&continuation-token=${encodeURIComponent(continuationToken)}`
+          : `${bucketUrl}?list-type=2`;
+        
+        const response: Response = await fetch(url, {
+          method: 'GET',
+          headers: { 'Accept': 'application/xml' },
+          mode: 'cors',
+          credentials: 'omit',
         });
 
-      const keys: Image[] = (await Promise.all(imagePromises))
-        .filter((image): image is Image => image !== null)
-        .sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime()); // Newest first
+        if (!response.ok) {
+          throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
+        }
 
-      if (keys.length === 0) {
+        const text: string = await response.text();
+
+        // Check if response is HTML
+        if (text.trim().startsWith('<!DOCTYPE html>') || text.includes('<html')) {
+          throw new Error(
+            'Received HTML instead of XML. The bucket URL may be incorrect or serving the MinIO browser UI. Contact the bucket owner to confirm the S3 API endpoint (e.g., https://storage.algosol.ca/s3/social-cleaner-posts-img/).'
+          );
+        }
+
+        const parser: DOMParser = new DOMParser();
+        const xml: Document = parser.parseFromString(text, 'application/xml');
+
+        if (xml.querySelector('parsererror')) {
+          throw new Error('Failed to parse XML response. Ensure the bucket returns a valid object listing.');
+        }
+
+        const imagePromises: Promise<Image | null>[] = Array.from(xml.querySelectorAll('Contents'))
+          .map(async (node: Element) => {
+            const key = node.querySelector('Key')?.textContent || '';
+            if (!/\.(jpg|jpeg|png|gif|webp)$/i.test(key)) return null;
+
+            // Fetch metadata via HEAD request
+            const headResponse = await fetch(`${bucketUrl}${encodeURIComponent(key)}`, {
+              method: 'HEAD',
+              mode: 'cors',
+              credentials: 'omit',
+            });
+            if (!headResponse.ok) {
+              console.warn(`Failed to fetch metadata for ${key}`);
+              return null;
+            }
+
+            const size = parseInt(headResponse.headers.get('Content-Length') || '0', 10);
+            if (size < minFileSize) return null; // Ignore images < 10KB
+
+            return {
+              key,
+              lastModified: node.querySelector('LastModified')?.textContent || '',
+              size,
+              contentType: headResponse.headers.get('Content-Type') || 'unknown',
+            };
+          });
+
+        const newImages = (await Promise.all(imagePromises))
+          .filter((image): image is Image => image !== null);
+        
+        imageList.push(...newImages);
+
+        // Get the next continuation token
+        continuationToken = xml.querySelector('NextContinuationToken')?.textContent || null;
+      } while (continuationToken);
+
+      if (imageList.length === 0) {
         throw new Error('No images found in the bucket with size >= 10KB.');
       }
+
+      // Sort images by lastModified (newest first)
+      imageList.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
 
       // Compute unique dates (sorted descending) for calendar highlights
       const dates = Array.from(
         new Set(
-          keys.map((image) => {
+          imageList.map((image) => {
             const date = normalizeDate(new Date(image.lastModified));
-            return date.toISOString(); // Store as ISO for uniqueDates
+            return date.toISOString();
           })
         )
       )
         .map((dateStr) => new Date(dateStr))
         .sort((a, b) => b.getTime() - a.getTime());
 
-      setImages(keys);
+      setImages(imageList);
       setUniqueDates(dates);
+
       // Filter for today's date by default
       const today = normalizeDate(new Date());
-      const todayImages = keys.filter((image) =>
+      const todayImages = imageList.filter((image) =>
         areDatesEqual(new Date(image.lastModified), today)
       );
       setDisplayedImages(todayImages.slice(0, batchSize));
@@ -145,7 +166,7 @@ const App: React.FC = () => {
       const errorMessage =
         err instanceof Error
           ? err.message.includes('cors') || err.message.includes('fetch')
-            ? `${err.message}. Ensure Nginx is correctly configured to allow CORS for ${window.location.origin}.`
+            ? `${err.message}. Ensure the server is correctly configured to allow CORS for ${window.location.origin}.`
             : err.message
           : 'Unknown error';
       setError(errorMessage);
@@ -160,8 +181,8 @@ const App: React.FC = () => {
 
   // Filter images by selected date and clear displayed images
   useEffect(() => {
-    setDisplayedImages([]); // Clear displayed images to free memory
-    setPage(1); // Reset pagination
+    setDisplayedImages([]);
+    setPage(1);
     if (!selectedDate) {
       setDisplayedImages(images.slice(0, batchSize));
       setHasMore(images.length > batchSize);
@@ -228,7 +249,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleScroll = () => {
       const scrollTop = window.scrollY || document.documentElement.scrollTop;
-      setIsFooterVisible(scrollTop === 0); // Show only when completely at top
+      setIsFooterVisible(scrollTop === 0);
     };
 
     window.addEventListener('scroll', handleScroll);
@@ -237,13 +258,13 @@ const App: React.FC = () => {
 
   // Handle image click to open modal
   const handleImageClick = (image: Image) => {
-    console.log('Image clicked:', image); // Debug log
+    console.log('Image clicked:', image);
     setSelectedImage(image);
   };
 
   // Close modal
   const handleCloseModal = () => {
-    console.log('Closing modal'); // Debug log
+    console.log('Closing modal');
     setSelectedImage(null);
   };
 
@@ -299,27 +320,25 @@ const App: React.FC = () => {
       ).length - 1
     : false;
 
-  // Navigate to previous date (one day earlier)
+  // Navigate to previous date
   const handlePreviousDate = () => {
     if (selectedDate) {
-      setSelectedDate(new Date(selectedDate.getTime() - 24 * 60 * 60 * 1000)); // Subtract one day
+      setSelectedDate(new Date(selectedDate.getTime() - 24 * 60 * 60 * 1000));
     } else {
-      setSelectedDate(new Date()); // Default to today
+      setSelectedDate(new Date());
     }
   };
 
-  // Navigate to next date (one day later)
+  // Navigate to next date
   const handleNextDate = () => {
     if (selectedDate) {
-      setSelectedDate(new Date(selectedDate.getTime() + 24 * 60 * 60 * 1000)); // Add one day
+      setSelectedDate(new Date(selectedDate.getTime() + 24 * 60 * 60 * 1000));
     }
   };
 
   // Check if previous/next dates exist
-  const hasPreviousDate = true; // Always true, as past dates are valid
-  const hasNextDate = selectedDate
-    ? !areDatesEqual(selectedDate, new Date())
-    : false;
+  const hasPreviousDate = true;
+  const hasNextDate = selectedDate ? !areDatesEqual(selectedDate, new Date()) : false;
 
   // Format selected date for display
   const formatSelectedDate = (date: Date | null): string => {
@@ -398,7 +417,7 @@ const App: React.FC = () => {
             </button>
             {selectedDate && (
               <button
-                onClick={() => setSelectedDate(new Date())} // Reset to today
+                onClick={() => setSelectedDate(new Date())}
                 className="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500"
                 aria-label="Clear date filter"
               >
@@ -439,7 +458,7 @@ const App: React.FC = () => {
           ))}
         </div>
         {loading && <div className="text-center text-gray-600 mt-4">Loading images...</div>}
-        <div ref={sentinelRef} className="h-10" /> {/* Sentinel for Intersection Observer */}
+        <div ref={sentinelRef} className="h-10" />
       </main>
       <footer
         className={`fixed bottom-0 left-0 right-0 bg-gray-800 text-white text-center p-4 z-10 transition-opacity duration-300 ${
