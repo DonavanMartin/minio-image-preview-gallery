@@ -23,7 +23,6 @@ const App: React.FC = () => {
   const [page, setPage] = useState<number>(1);
   const [hasMore, setHasMore] = useState<boolean>(true);
   const [isFooterVisible, setIsFooterVisible] = useState<boolean>(true); // Track footer visibility
-  const [lastScrollTop, setLastScrollTop] = useState<number>(0); // Track last scroll position
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
@@ -48,6 +47,13 @@ const App: React.FC = () => {
       d1.getMonth() === d2.getMonth() &&
       d1.getDate() === d2.getDate()
     );
+  };
+
+  // Calculate number of images for the selected date
+  const getImageCount = (): number => {
+    if (!selectedDate) return images.length;
+    const selected = normalizeDate(selectedDate);
+    return images.filter((image) => areDatesEqual(new Date(image.lastModified), selected)).length;
   };
 
   const fetchImages = useCallback(async () => {
@@ -222,23 +228,12 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleScroll = () => {
       const scrollTop = window.scrollY || document.documentElement.scrollTop;
-
-      // Show footer if at the top
-      if (scrollTop === 0) {
-        setIsFooterVisible(true);
-        setLastScrollTop(scrollTop);
-        return;
-      }
-
-      // Determine scroll direction
-      const isScrollingDown = scrollTop > lastScrollTop;
-      setIsFooterVisible(!isScrollingDown);
-      setLastScrollTop(scrollTop);
+      setIsFooterVisible(scrollTop === 0); // Show only when completely at top
     };
 
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [lastScrollTop]);
+  }, []);
 
   // Handle image click to open modal
   const handleImageClick = (image: Image) => {
@@ -248,6 +243,7 @@ const App: React.FC = () => {
 
   // Close modal
   const handleCloseModal = () => {
+    console.log('Closing modal'); // Debug log
     setSelectedImage(null);
   };
 
@@ -413,7 +409,8 @@ const App: React.FC = () => {
         </div>
         {selectedDate && (
           <div className="mb-4 text-center text-gray-700">
-            Showing images from: <span className="font-semibold">{formatSelectedDate(selectedDate)}</span>
+            Showing <span className="font-semibold">{getImageCount()}</span> images from:{' '}
+            <span className="font-semibold">{formatSelectedDate(selectedDate)}</span>
           </div>
         )}
         {error && <div className="text-center text-red-600 mt-4">Error: {error}</div>}
