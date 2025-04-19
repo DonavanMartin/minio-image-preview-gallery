@@ -28,6 +28,24 @@ const App: React.FC = () => {
   const batchSize: number = 20; // Number of images per page
   const minFileSize: number = 10240; // 10KB in bytes
 
+  // Normalize date to start of day in local timezone
+  const normalizeDate = (date: Date): Date => {
+    const normalized = new Date(date);
+    normalized.setHours(0, 0, 0, 0);
+    return normalized;
+  };
+
+  // Compare dates for equality (year, month, day in local timezone)
+  const areDatesEqual = (date1: Date, date2: Date): boolean => {
+    const d1 = normalizeDate(date1);
+    const d2 = normalizeDate(date2);
+    return (
+      d1.getFullYear() === d2.getFullYear() &&
+      d1.getMonth() === d2.getMonth() &&
+      d1.getDate() === d2.getDate()
+    );
+  };
+
   const fetchImages = useCallback(async () => {
     try {
       setLoading(true);
@@ -94,18 +112,21 @@ const App: React.FC = () => {
       // Compute unique dates (sorted descending) for calendar highlights
       const dates = Array.from(
         new Set(
-          keys.map((image) => new Date(new Date(image.lastModified).setHours(0, 0, 0, 0)).toISOString())
+          keys.map((image) => {
+            const date = normalizeDate(new Date(image.lastModified));
+            return date.toISOString(); // Store as ISO for uniqueDates
+          })
         )
       )
-        .map((date) => new Date(date))
+        .map((dateStr) => new Date(dateStr))
         .sort((a, b) => b.getTime() - a.getTime());
 
       setImages(keys);
       setUniqueDates(dates);
       // Filter for today's date by default
-      const todayStr = new Date().toISOString().split('T')[0];
-      const todayImages = keys.filter(
-        (image) => new Date(image.lastModified).toISOString().split('T')[0] === todayStr
+      const today = normalizeDate(new Date());
+      const todayImages = keys.filter((image) =>
+        areDatesEqual(new Date(image.lastModified), today)
       );
       setDisplayedImages(todayImages.slice(0, batchSize));
       setHasMore(todayImages.length > batchSize);
@@ -137,9 +158,9 @@ const App: React.FC = () => {
       return;
     }
 
-    const selectedDateStr = selectedDate.toISOString().split('T')[0];
-    const filteredImages = images.filter(
-      (image) => new Date(image.lastModified).toISOString().split('T')[0] === selectedDateStr
+    const selected = normalizeDate(selectedDate);
+    const filteredImages = images.filter((image) =>
+      areDatesEqual(new Date(image.lastModified), selected)
     );
 
     setDisplayedImages(filteredImages.slice(0, batchSize));
@@ -156,10 +177,8 @@ const App: React.FC = () => {
     const endIndex = nextPage * batchSize;
 
     const imagesToDisplay = selectedDate
-      ? images.filter(
-          (image) =>
-            new Date(image.lastModified).toISOString().split('T')[0] ===
-            selectedDate.toISOString().split('T')[0]
+      ? images.filter((image) =>
+          areDatesEqual(new Date(image.lastModified), normalizeDate(selectedDate))
         )
       : images;
 
@@ -209,10 +228,8 @@ const App: React.FC = () => {
   const handlePreviousImage = () => {
     if (!selectedImage) return;
     const currentImages = selectedDate
-      ? images.filter(
-          (image) =>
-            new Date(image.lastModified).toISOString().split('T')[0] ===
-            selectedDate.toISOString().split('T')[0]
+      ? images.filter((image) =>
+          areDatesEqual(new Date(image.lastModified), normalizeDate(selectedDate))
         )
       : images;
     const currentIndex = currentImages.findIndex((image) => image.key === selectedImage.key);
@@ -225,10 +242,8 @@ const App: React.FC = () => {
   const handleNextImage = () => {
     if (!selectedImage) return;
     const currentImages = selectedDate
-      ? images.filter(
-          (image) =>
-            new Date(image.lastModified).toISOString().split('T')[0] ===
-            selectedDate.toISOString().split('T')[0]
+      ? images.filter((image) =>
+          areDatesEqual(new Date(image.lastModified), normalizeDate(selectedDate))
         )
       : images;
     const currentIndex = currentImages.findIndex((image) => image.key === selectedImage.key);
@@ -240,28 +255,22 @@ const App: React.FC = () => {
   // Check if previous/next images exist
   const hasPreviousImage = selectedImage
     ? (selectedDate
-        ? images.filter(
-            (image) =>
-              new Date(image.lastModified).toISOString().split('T')[0] ===
-              selectedDate.toISOString().split('T')[0]
+        ? images.filter((image) =>
+            areDatesEqual(new Date(image.lastModified), normalizeDate(selectedDate))
           )
         : images
       ).findIndex((image) => image.key === selectedImage.key) > 0
     : false;
   const hasNextImage = selectedImage
     ? (selectedDate
-        ? images.filter(
-            (image) =>
-              new Date(image.lastModified).toISOString().split('T')[0] ===
-              selectedDate.toISOString().split('T')[0]
+        ? images.filter((image) =>
+            areDatesEqual(new Date(image.lastModified), normalizeDate(selectedDate))
           )
         : images
       ).findIndex((image) => image.key === selectedImage.key) <
       (selectedDate
-        ? images.filter(
-            (image) =>
-              new Date(image.lastModified).toISOString().split('T')[0] ===
-              selectedDate.toISOString().split('T')[0]
+        ? images.filter((image) =>
+            areDatesEqual(new Date(image.lastModified), normalizeDate(selectedDate))
           )
         : images
       ).length - 1
@@ -286,13 +295,13 @@ const App: React.FC = () => {
   // Check if previous/next dates exist
   const hasPreviousDate = true; // Always true, as past dates are valid
   const hasNextDate = selectedDate
-    ? selectedDate.toISOString().split('T')[0] !== new Date().toISOString().split('T')[0]
+    ? !areDatesEqual(selectedDate, new Date())
     : false;
 
   // Format selected date for display
   const formatSelectedDate = (date: Date | null): string => {
     if (!date) return 'All Dates';
-    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
   };
 
   return (
@@ -313,7 +322,7 @@ const App: React.FC = () => {
               onChange={(date: Date | null) => setSelectedDate(date)}
               className="border rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white shadow-sm"
               placeholderText="Select a date"
-              dateFormat="MMMM d, yyyy"
+              dateFormat="yyyy-MM-dd"
               maxDate={new Date()}
               highlightDates={uniqueDates}
             />
